@@ -6,7 +6,8 @@ from typing import Literal
 from scheduler import schedule_charging, evaluate_schedule
 
 app = FastAPI(title="Voltiva API", version="1.0")
-
+# Temporary storage (will be replaced by PostgreSQL)
+saved_requests = []
 
 # Structure of a charging request
 class ChargingRequest(BaseModel):
@@ -59,4 +60,61 @@ def create_schedule(data: ScheduleInput):
         "strategy": data.strategy,
         "schedule": result,
         "metrics": metrics
+    }
+
+
+@app.post("/requests", status_code=201)
+def add_request(request: ChargingRequest):
+
+    # Prevent duplicate household requests for now
+    for saved in saved_requests:
+        if saved["household"] == request.household:
+            raise HTTPException(
+                status_code=409,
+                detail="Household already has a request"
+            )
+
+    saved_requests.append(request.model_dump())
+
+    return {
+        "message": "Charging request saved",
+        "request": request.model_dump()
+    }
+
+
+@app.get("/requests")
+def get_requests():
+    return {
+        "total": len(saved_requests),
+        "requests": saved_requests
+    }
+
+
+@app.post("/schedule/saved")
+def schedule_saved_requests(
+    capacity: float = 20,
+    strategy: Literal["fcfs", "edf", "greedy"] = "greedy"
+):
+    if capacity <= 0:
+        raise HTTPException(
+            status_code=422,
+            detail="Capacity must be positive"
+        )
+
+    if not saved_requests:
+        raise HTTPException(
+            status_code=400,
+            detail="No charging requests available"
+        )
+
+    result = schedule_charging(
+        requests=saved_requests,
+        capacity=capacity,
+        strategy=strategy
+    )
+
+    return {
+        "strategy": strategy,
+        "schedule": result,
+        "metrics": evaluate_schedule(result)
     }
