@@ -29,3 +29,14 @@ class ChargingRequestDB(Base):
     deadline: Mapped[int] = mapped_column(
         Integer, nullable=False
     )
+
+class EssentialDemandDB(Base):
+    __tablename__ = "essential_demand"
+
+    hour: Mapped[int] = mapped_column(
+        Integer, primary_key=True
+    )
+
+    demand: Mapped[float] = mapped_column(
+        Float, nullable=False
+    )

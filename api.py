@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
 from database import engine
-from models import ChargingRequestDB
+from models import ChargingRequestDB, EssentialDemandDB
 
 from scheduler import schedule_charging, evaluate_schedule
 
@@ -23,6 +23,10 @@ class ChargingRequest(BaseModel):
     energy: float = Field(gt=0)
     power: float = Field(gt=0)
     deadline: int = Field(ge=19, le=30)
+
+class EssentialDemandInput(BaseModel):
+    hour: int = Field(ge=18, le=29)
+    demand: float = Field(ge=0)
 
 
 class ScheduleInput(BaseModel):
@@ -175,20 +179,98 @@ def schedule_saved_requests(
             for request in stored_requests
         ]
 
+        demand_records = session.scalars(
+            select(EssentialDemandDB)
+        ).all()
+
+        essential_demand = {
+            record.hour: record.demand
+            for record in demand_records
+        }
+
     if not requests:
         raise HTTPException(
             status_code=400,
             detail="No charging requests available"
         )
 
+    missing_hours = [
+        hour for hour in range(18, 30)
+        if hour not in essential_demand
+    ]
+
+    if missing_hours:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Essential demand data is incomplete",
+                "missing_hours": missing_hours
+            }
+        )
+
+    if any(
+        demand > capacity
+        for demand in essential_demand.values()
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Essential demand exceeds community capacity"
+        )
+
     result = schedule_charging(
         requests=requests,
         capacity=capacity,
-        strategy=strategy
+        strategy=strategy,
+        essential_demand=essential_demand
     )
 
     return {
         "strategy": strategy,
+        "essential_demand": essential_demand,
         "schedule": result,
         "metrics": evaluate_schedule(result)
     }
+
+
+@app.post("/essential-demand")
+def save_essential_demand(data: EssentialDemandInput):
+
+    with Session(engine) as session:
+
+        existing = session.get(
+            EssentialDemandDB,
+            data.hour
+        )
+
+        if existing:
+            existing.demand = data.demand
+
+        else:
+            new_demand = EssentialDemandDB(
+                hour=data.hour,
+                demand=data.demand
+            )
+            session.add(new_demand)
+
+        session.commit()
+
+    return {
+        "message": "Essential demand saved",
+        "hour": data.hour,
+        "demand": data.demand
+    }
+
+
+@app.get("/essential-demand")
+def get_essential_demand():
+
+    with Session(engine) as session:
+
+        records = session.scalars(
+            select(EssentialDemandDB)
+        ).all()
+
+        return {
+            str(record.hour): record.demand
+            for record in records
+        }
