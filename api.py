@@ -12,6 +12,9 @@ from models import ChargingRequestDB, EssentialDemandDB
 
 from scheduler import schedule_charging, evaluate_schedule
 
+import time
+from optimizer import optimize_schedule
+
 
 app = FastAPI(title="Voltiva API", version="1.0")
 
@@ -32,9 +35,8 @@ class EssentialDemandInput(BaseModel):
 class ScheduleInput(BaseModel):
     requests: list[ChargingRequest]
     capacity: float = Field(gt=0)
-    strategy: Literal["fcfs", "edf", "greedy"] = "greedy"
+    strategy: Literal["fcfs", "edf", "greedy", "ortools"] = "greedy"
     essential_demand: dict[int, float] = Field(default_factory=dict)
-
 
 # Helper: convert database row into scheduler input
 
@@ -59,6 +61,42 @@ def validate_essential_demand(demand):
             detail="Essential demand must be non-negative for hours 18-29"
         )
 
+
+def run_scheduler(requests, capacity, strategy, essential_demand):
+
+    start_time = time.perf_counter()
+
+    if strategy == "ortools":
+        result = optimize_schedule(
+            requests=requests,
+            capacity=capacity,
+            essential_demand=essential_demand
+        )
+
+        schedule = result["schedule"]
+        metrics = result["metrics"]
+        status = result["status"]
+
+    else:
+        schedule = schedule_charging(
+            requests=requests,
+            capacity=capacity,
+            strategy=strategy,
+            essential_demand=essential_demand
+        )
+
+        metrics = evaluate_schedule(schedule)
+        status = "completed"
+
+    execution_time = (time.perf_counter() - start_time) * 1000
+
+    return {
+        "strategy": strategy,
+        "status": status,
+        "schedule": schedule,
+        "metrics": metrics,
+        "execution_time_ms": round(execution_time, 3)
+    }
 
 # Home endpoint
 
@@ -128,36 +166,64 @@ def get_requests():
 
 # Schedule directly supplied requests (old endpoint)
 
+
 @app.post("/schedule")
 def create_schedule(data: ScheduleInput):
 
     validate_essential_demand(data.essential_demand)
+
+    if len({
+        request.household
+        for request in data.requests
+    }) != len(data.requests):
+        raise HTTPException(
+            status_code=422,
+            detail="Duplicate household identifiers"
+        )
 
     requests = [
         request.model_dump()
         for request in data.requests
     ]
 
-    result = schedule_charging(
+    if any(
+        demand > data.capacity
+        for demand in data.essential_demand.values()
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="Essential demand exceeds capacity"
+        )
+
+    if data.strategy == "ortools":
+        for request in requests:
+            if abs(
+                request["energy"] / request["power"]
+                - round(request["energy"] / request["power"])
+            ) > 1e-9:
+                raise HTTPException(
+                    status_code=422,
+                    detail="OR-Tools requires energy to be a multiple of power"
+                )
+
+    return run_scheduler(
         requests=requests,
         capacity=data.capacity,
         strategy=data.strategy,
         essential_demand=data.essential_demand
     )
 
-    return {
-        "strategy": data.strategy,
-        "schedule": result,
-        "metrics": evaluate_schedule(result)
-    }
 
 
 # Schedule requests stored in PostgreSQL
 
+
 @app.post("/schedule/saved")
 def schedule_saved_requests(
     capacity: float = 20,
-    strategy: Literal["fcfs", "edf", "greedy"] = "greedy"
+    strategy: Literal[
+        "fcfs", "edf", "greedy", "ortools"
+    ] = "greedy"
 ):
 
     if capacity <= 0:
@@ -217,19 +283,23 @@ def schedule_saved_requests(
             detail="Essential demand exceeds community capacity"
         )
 
-    result = schedule_charging(
+    if strategy == "ortools":
+        for request in requests:
+            if abs(
+                request["energy"] / request["power"]
+                - round(request["energy"] / request["power"])
+            ) > 1e-9:
+                raise HTTPException(
+                    status_code=422,
+                    detail="OR-Tools requires energy to be a multiple of power"
+                )
+
+    return run_scheduler(
         requests=requests,
         capacity=capacity,
         strategy=strategy,
         essential_demand=essential_demand
     )
-
-    return {
-        "strategy": strategy,
-        "essential_demand": essential_demand,
-        "schedule": result,
-        "metrics": evaluate_schedule(result)
-    }
 
 
 @app.post("/essential-demand")
