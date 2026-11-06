@@ -13,8 +13,7 @@ from models import ChargingRequestDB, EssentialDemandDB
 from scheduler import schedule_charging, evaluate_schedule
 
 import time
-from optimizer import optimize_schedule
-
+from optimizer import optimize_schedule, optimize_fair_schedule
 
 app = FastAPI(title="Voltiva API", version="1.0")
 
@@ -35,7 +34,9 @@ class EssentialDemandInput(BaseModel):
 class ScheduleInput(BaseModel):
     requests: list[ChargingRequest]
     capacity: float = Field(gt=0)
-    strategy: Literal["fcfs", "edf", "greedy", "ortools"] = "greedy"
+    strategy: Literal[
+    "fcfs", "edf", "greedy", "ortools", "fair"
+] = "greedy"
     essential_demand: dict[int, float] = Field(default_factory=dict)
 
 # Helper: convert database row into scheduler input
@@ -77,6 +78,17 @@ def run_scheduler(requests, capacity, strategy, essential_demand):
         metrics = result["metrics"]
         status = result["status"]
 
+    elif strategy == "fair":
+        result = optimize_fair_schedule(
+            requests=requests,
+            capacity=capacity,
+            essential_demand=essential_demand
+        )
+
+        schedule = result["schedule"]
+        metrics = result["metrics"]
+        status = result["status"]
+
     else:
         schedule = schedule_charging(
             requests=requests,
@@ -88,7 +100,9 @@ def run_scheduler(requests, capacity, strategy, essential_demand):
         metrics = evaluate_schedule(schedule)
         status = "completed"
 
-    execution_time = (time.perf_counter() - start_time) * 1000
+    execution_time = (
+        time.perf_counter() - start_time
+    ) * 1000
 
     return {
         "strategy": strategy,
@@ -97,6 +111,7 @@ def run_scheduler(requests, capacity, strategy, essential_demand):
         "metrics": metrics,
         "execution_time_ms": round(execution_time, 3)
     }
+
 
 # Home endpoint
 
@@ -195,7 +210,7 @@ def create_schedule(data: ScheduleInput):
             detail="Essential demand exceeds capacity"
         )
 
-    if data.strategy == "ortools":
+    if data.strategy in ("ortools", "fair"):
         for request in requests:
             if abs(
                 request["energy"] / request["power"]
@@ -283,7 +298,7 @@ def schedule_saved_requests(
             detail="Essential demand exceeds community capacity"
         )
 
-    if strategy == "ortools":
+    if strategy in ("ortools", "fair"):
         for request in requests:
             if abs(
                 request["energy"] / request["power"]
