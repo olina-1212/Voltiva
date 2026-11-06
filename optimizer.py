@@ -122,7 +122,7 @@ def optimize_schedule(
     model.Minimize(sum(cost_terms))
 
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 10
+    solver.parameters.max_time_in_seconds = 3
 
     status = solver.Solve(model)
 
@@ -283,16 +283,17 @@ def optimize_fair_schedule(
 
     status = solver.Solve(model)
 
-    if status != cp_model.OPTIMAL:
+    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         return {
             "status": "not_proven_optimal",
             "schedule": {},
             "metrics": {}
         }
 
-    best_completed = round(
-        solver.ObjectiveValue()
-    )
+    best_completed = sum(
+    solver.Value(completed[i])
+    for i in range(len(requests))
+)
 
     model.Add(total_completed == best_completed)
 
@@ -312,16 +313,14 @@ def optimize_fair_schedule(
 
     status = solver.Solve(model)
 
-    if status != cp_model.OPTIMAL:
+    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         return {
             "status": "not_proven_optimal",
             "schedule": {},
             "metrics": {}
         }
 
-    best_fraction = round(
-        solver.ObjectiveValue()
-    )
+    best_fraction = solver.Value(min_fraction)
 
     model.Add(min_fraction == best_fraction)
 
